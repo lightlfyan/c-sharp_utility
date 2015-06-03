@@ -5,7 +5,33 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using ThreadSafeCollections;
 
+
+public interface Proto
+{
+	byte[] ToBytes ();
+}
+
+public class Msg: Proto
+{
+	string body;
+	public Msg (string s)
+	{
+		this.body = s;
+	}
+	
+	public byte[] ToBytes ()
+	{
+		byte[] body = System.Text.Encoding.UTF8.GetBytes (this.body);
+		byte[] header = SockIOCP.host2net ((uint)body.Length);
+		byte[] payload = new byte[header.Length + body.Length];
+		
+		System.Array.Copy (header, payload, 4);
+		System.Array.Copy (body, 0, payload, header.Length, body.Length);
+		return  payload;
+	}
+}
 
 public class UserToken
 {
@@ -13,6 +39,7 @@ public class UserToken
 	public int offset;
 	public byte[] buf;
 	public bool isBody;
+	public TQueue<byte[]> q;
 	
 	public int Len {
 		get {
@@ -24,26 +51,28 @@ public class UserToken
 
 public class SockIOCP : MonoBehaviour
 {
+	private int idx = 0;
 
 	Socket sock; 
-    
 	IPEndPoint remoteIPeP;
+	public TQueue<byte[]> q = new TQueue<byte[]> ();
 	
 	void Start ()
 	{
 		Security.PrefetchSocketPolicy ("127.0.0.1", 8000);
-		Debug.Log (Thread.CurrentThread.ManagedThreadId);
 		ThreadPool.SetMaxThreads (10, 10);
-  
 	}
     
 	// Update is called once per frame
 	void Update ()
 	{
-//		if (!IsAlive ()) {
-//			Debug.Log ("===============");
-//		}
+		if (q.Count > 0) {
+			foreach (var a in q.DequeueAll ()) {
+				Debug.Log ("msg: " + Encoding.UTF8.GetString (a));
+			}
+		}
 	}
+	
 	void OnGUI ()
 	{
 		if (GUI.Button (new Rect (0, 0, 100, 20), "connect")) {
@@ -80,7 +109,10 @@ public class SockIOCP : MonoBehaviour
 		IPEndPoint ipEnd = new IPEndPoint (IPAddress.Parse (ip), port);
 		remoteIPeP = ipEnd;
 		e.RemoteEndPoint = ipEnd;
-		e.UserToken = sock;
+		e.UserToken = new UserToken{
+			sock = sock,
+			q = q
+		};
 		e.Completed += new EventHandler<SocketAsyncEventArgs> (IO_Completed);
 		sock.ConnectAsync (e);
 	}
@@ -92,7 +124,7 @@ public class SockIOCP : MonoBehaviour
 		socketEventArg.RemoteEndPoint = remoteIPeP;
 		socketEventArg.UserToken = sock;
 		
-		var buffer = new Msg ("test12345").ToBytes ();
+		var buffer = new Msg ("msg" + idx.ToString ()).ToBytes ();
 		socketEventArg.SetBuffer (buffer, 0, buffer.Length);
 		
 		bool willRaiseEvent = sock.SendAsync (socketEventArg);
@@ -101,9 +133,7 @@ public class SockIOCP : MonoBehaviour
 			Debug.Log ("will raise send");
 			ProcessSend (socketEventArg);
 		}
-		
-		Debug.Log ("send done");
-	
+		idx += 1;
 	}
 	
 	void Close ()
@@ -142,9 +172,13 @@ public class SockIOCP : MonoBehaviour
 			// Successfully connected to the server
 			Debug.Log ("connect success");
 			
-			var sock = e.UserToken as Socket;
+			var token = e.UserToken as UserToken;
+			var sock = token.sock;
+			var q = token.q;
+			
 			e.UserToken = new UserToken{
 				sock = sock,
+				q = q,
 				offset = 0,
 				isBody = false,
 				buf = new byte[4]
@@ -164,7 +198,6 @@ public class SockIOCP : MonoBehaviour
 	
 	private static void ProcessReceive (SocketAsyncEventArgs e)
 	{
-		Debug.Log ("ProcessReceive: " + Thread.CurrentThread.ManagedThreadId);
 		if (e.BytesTransferred <= 0) {
 			var ut = (UserToken)e.UserToken;
 			ut.sock.Close ();
@@ -198,12 +231,15 @@ public class SockIOCP : MonoBehaviour
 				return;
 			}
 			
-			Debug.Log (Encoding.UTF8.GetString (ut.buf));
+//			Debug.Log (Encoding.UTF8.GetString (ut.buf));
+			
+			ut.q.Enqueue (ut.buf);
 			
 			ut.buf = new byte[4];
 			ut.offset = 0;
 			ut.isBody = false;
 			e.SetBuffer (ut.buf, ut.offset, ut.Len);
+			
 			
 			if (!ut.sock.ReceiveAsync (e)) {
 				ProcessReceive (e);
@@ -216,9 +252,9 @@ public class SockIOCP : MonoBehaviour
 	static void ProcessSend (SocketAsyncEventArgs e)
 	{
 		if (e.SocketError == SocketError.Success) {
-			Debug.Log ("send succ");
+//			Debug.Log ("send succ");
 		} else {
-			Debug.Log ("send error");
+//			Debug.Log ("send error");
 			
 			throw new SocketException ((int)e.SocketError);
 		}
