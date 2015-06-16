@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using System.Linq;
 using ThreadSafeCollections;
 
 
@@ -37,13 +38,15 @@ public class UserToken
 {
 	public Socket sock;
 	public int offset;
+	public int buflen;
 	public byte[] buf;
 	public bool isBody;
 	public TQueue<byte[]> q;
 	
 	public int Len {
 		get {
-			return buf.Length - offset;
+//			return buf.Length - offset;
+			return buflen - offset;
 		}
 	}
 }
@@ -57,6 +60,8 @@ public class SockIOCP : MonoBehaviour
 	IPEndPoint remoteIPeP;
 	public TQueue<byte[]> q = new TQueue<byte[]> ();
 	
+	public RingBuffer<byte> buf = new RingBuffer<byte> (1024 * 1024);
+	
 	void Start ()
 	{
 		Security.PrefetchSocketPolicy ("127.0.0.1", 8000);
@@ -65,9 +70,13 @@ public class SockIOCP : MonoBehaviour
     
 	// Update is called once per frame
 	void Update ()
-	{
-		if (q.Count > 0) {
-			foreach (var a in q.DequeueAll ()) {
+	{	
+	
+		IsAlive ();
+		
+		var l = q.DequeueAll ();
+		if (l.Count > 0) {
+			foreach (var a in l) {
 				Debug.Log ("msg: " + Encoding.UTF8.GetString (a));
 			}
 		}
@@ -82,7 +91,7 @@ public class SockIOCP : MonoBehaviour
 		if (GUI.Button (new Rect (0, 20, 100, 20), "send")) {
 			Send ();
 		}
-		if (GUI.Button (new Rect (0, 40, 100, 20), "down")) {
+		if (GUI.Button (new Rect (0, 40, 100, 20), "close")) {
 			Close ();
 		}
             
@@ -93,11 +102,50 @@ public class SockIOCP : MonoBehaviour
 		if (sock == null) {
 			return false;
 		}
-		if ((sock.Poll (0, SelectMode.SelectWrite)) && (!sock.Poll (0, SelectMode.SelectError))) {
-			return true;
+				
+		try {
+			if ((sock.Poll (0, SelectMode.SelectWrite)) && (!sock.Poll (0, SelectMode.SelectError))) {
+				return true;
+			}
+		} catch (ObjectDisposedException) {
+			return false;
 		}
+	
 		return false;
 	}
+	
+	
+	
+	public bool IsSocketConnected ()
+	{
+		bool blockingState = sock.Blocking;
+		bool isConnected = true;
+		try {
+			byte[] tmp = new byte[1];
+			sock.Blocking = false;
+			sock.Send (tmp, 0, 0);
+			isConnected = true;
+		} catch (SocketException ex) {
+			if (ex.NativeErrorCode.Equals (10035)) {
+				//Console.WriteLine("Still Connected, but the Send would block");
+				isConnected = true;
+			} else {
+				//Console.WriteLine("Disconnected: error code {0}!", e.NativeErrorCode);
+				isConnected = false;
+			}
+		} finally {
+			try {
+				sock.Blocking = blockingState;
+			} catch (ObjectDisposedException) {
+			
+			}
+			
+		}
+		
+		return isConnected;
+	}
+    
+    
     
 	void Connect (string ip, int port)
 	{
@@ -105,16 +153,19 @@ public class SockIOCP : MonoBehaviour
 			return;
 		}
 		sock = new Socket (AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-		SocketAsyncEventArgs e = new SocketAsyncEventArgs ();
+		SocketAsyncEventArgs socketEventArg = new SocketAsyncEventArgs ();
 		IPEndPoint ipEnd = new IPEndPoint (IPAddress.Parse (ip), port);
 		remoteIPeP = ipEnd;
-		e.RemoteEndPoint = ipEnd;
-		e.UserToken = new UserToken{
+		socketEventArg.RemoteEndPoint = ipEnd;
+		socketEventArg.UserToken = new UserToken{
 			sock = sock,
 			q = q
 		};
-		e.Completed += new EventHandler<SocketAsyncEventArgs> (IO_Completed);
-		sock.ConnectAsync (e);
+		socketEventArg.Completed += new EventHandler<SocketAsyncEventArgs> (IO_Completed);
+		bool willRaiseEvent = sock.ConnectAsync (socketEventArg);
+		if (!willRaiseEvent) {
+			ProcessConnect (socketEventArg);
+		}
 	}
 	
 	void Send ()
@@ -143,8 +194,22 @@ public class SockIOCP : MonoBehaviour
 		}
 		
 		sock.Shutdown (SocketShutdown.Both);
+//		sock.Disconnect (true);
+		sock.Close ();
 		sock = null;
 	}
+	
+	void OnApplicationQuit ()
+	{
+		try {
+			sock.Shutdown (SocketShutdown.Both);
+//			sock.Disconnect (true);
+			sock.Close ();
+		} catch (Exception) {
+	
+		}
+	}
+	
 	
 	static void IO_Completed (object sender, SocketAsyncEventArgs e)
 	{
@@ -181,7 +246,8 @@ public class SockIOCP : MonoBehaviour
 				q = q,
 				offset = 0,
 				isBody = false,
-				buf = new byte[4]
+				buf = new byte[1024*1024],
+				buflen = 4
 			};
 			
 			var ut = (UserToken)e.UserToken;
@@ -198,6 +264,9 @@ public class SockIOCP : MonoBehaviour
 	
 	private static void ProcessReceive (SocketAsyncEventArgs e)
 	{
+	
+		Debug.Log ("process receive");
+		
 		if (e.BytesTransferred <= 0) {
 			var ut = (UserToken)e.UserToken;
 			ut.sock.Close ();
@@ -218,8 +287,12 @@ public class SockIOCP : MonoBehaviour
 			}
 			
 			if (!ut.isBody) {
-				int len = (int)net2host (ut.buf);
-				ut.buf = new byte[len];
+				int len = (int)net2host (ut.buf.Take (ut.buflen).ToArray ());
+				
+				if (len > ut.buf.Length) {
+					//todo
+				}
+				ut.buflen = len;
 				ut.offset = 0;
 				ut.isBody = true;
 				e.SetBuffer (ut.buf, ut.offset, ut.Len);
@@ -233,9 +306,9 @@ public class SockIOCP : MonoBehaviour
 			
 //			Debug.Log (Encoding.UTF8.GetString (ut.buf));
 			
-			ut.q.Enqueue (ut.buf);
+			ut.q.Enqueue (ut.buf.Take (ut.buflen).ToArray ());
 			
-			ut.buf = new byte[4];
+			ut.buflen = 4;
 			ut.offset = 0;
 			ut.isBody = false;
 			e.SetBuffer (ut.buf, ut.offset, ut.Len);
