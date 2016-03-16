@@ -1,5 +1,5 @@
 using System;
-public class StateMatchine<T> where T : class
+public class StateMachine<T> where T : class
 {
     //
     // Fields
@@ -17,7 +17,7 @@ public class StateMatchine<T> where T : class
     //
     // Constructors
     //
-    public StateMatchine (T owner)
+    public StateMachine (T owner)
     {
         this.mStateCache = new Map<string, State<T>> ();
         this.mOwner = owner;
