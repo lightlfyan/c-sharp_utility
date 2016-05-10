@@ -1,9 +1,11 @@
 ﻿using UnityEngine;
 using System.Collections;
 
-public class followfinger : MonoBehaviour {
 
-	public Vector3 target ;
+public class followfinger : MonoBehaviour
+{
+
+	public Vector3 target;
 	private Vector3 speed;
 
 	public bool move = false;
@@ -11,49 +13,45 @@ public class followfinger : MonoBehaviour {
 	private Quaternion rot;
 
 	// Use this for initialization
-	void Start () {
+	void Start()
+	{
 		target = transform.position;
-		rot = transform.rotation;
 	}
 	
 	// Update is called once per frame
-	void Update () {
+	void Update()
+	{
 
-		if(move && Input.GetMouseButton(0)){
-			var ray = Camera.main.ScreenPointToRay (Input.mousePosition);
+		if (move && Input.GetMouseButton(0)) {
+			var ray = Camera.main.ScreenPointToRay(Input.mousePosition);
 			RaycastHit hit;
 
-			if (Physics.Raycast (ray, out hit, Mathf.Infinity)) {
-				if(hit.collider.gameObject != this.gameObject){
-					target = hit.point;
+			if (Physics.Raycast(ray, out hit, Mathf.Infinity)) {
+				if (hit.collider.gameObject != this.gameObject) {
+					target = hit.point + new Vector3(0, 1, 0);
 				}
 			}
 		}
 
-		var head = transform.position + transform.forward * 0.5f;
-		var tail = transform.position - transform.forward * 0.5f;
 
-
-		if((target - transform.position).sqrMagnitude < 0.25){
+		if ((target - transform.position).sqrMagnitude < 0.25) {
 			return;
 		}
-
-		if((target-head).sqrMagnitude > (target-tail).sqrMagnitude){
-			transform.rotation = Quaternion.LookRotation (target - transform.position);
-		} else {
-			transform.rotation = Quaternion.LookRotation (transform.position - target);
-		}
-
-		transform.position = Vector3.SmoothDamp (transform.position, target, ref speed, 0.1f);
+		var newpos = Vector3.SmoothDamp(transform.position, target, ref speed, 0.1f);
+		Debug.DrawLine(transform.position, newpos, Color.red, 0.5f); 
+		transform.position = newpos;
 	}
 
-	void OnMouseDown() {
-		Debug.Log ("click");
+	void OnMouseDown()
+	{
+		Debug.Log("click");
 		move = true;
 	}
 
-	void OnMouseUp() {
-		Debug.Log ("out");
+	void OnMouseUp()
+	{
+		Debug.Log("out");
 		move = false;
 	}
 }
+
